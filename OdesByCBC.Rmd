@@ -1,7 +1,7 @@
 ---
-title: "BC_Odes_w_Gibson_data"
+title: "Preliminary analysis of the available data for BC Butterflies and Dragonflies with a comparison of the data available online from collections and the data available from iNaturalist"
 author: "Nathan G. Earley"
-date: "2025-12-17"
+date: "2026-01-173"
 output: pdf_document
 ---
 
@@ -9,8 +9,8 @@ output: pdf_document
 knitr::opts_chunk$set(echo = TRUE)
 
 library(tidyverse)
-library(red)
 library(rinat)
+library(rgbif)
 library(sf)
 ```
 
@@ -20,11 +20,52 @@ We're trying to figure out where we should do the Southern Interior of BC's Drag
 
 I'm not uploading the data to GitHub because they're fairly big files... let me know if you want them and I'll share.
 
+## Candidate locations
+
+There are 3 Christmas Bird count locations that seem like they would be the best fit for hosting the Ode and Butt Counts. Apex Mountain, Oliver-Osoyoos, and Vaseux Lake.
+
+First we'll get those circles.
+
+For the Oliver-Osoyoos, and Vaseux Lake CBC circles we can use Dave Bell's CBC circles which I downloaded from his "(My Google Maps)[https://www.google.com/maps/d/viewer?mid=1D49EyLXIFoIBQYS5rE6Fi9YTenb6H46A&ll=49.715363640775124%2C-119.40967101463359&z=8]" and edited in OkanaganCBCcircles.R in this .RProj directory.
+
+```{r ReadCircles, echo = TRUE}
+OliverOsoyoosCBC <- sf::st_read("data/NathanCBCkmls/OliverOsoyoosCBC_Circle.kml",
+                                layer = "OliverOsoyoosCBC_Circle",
+                                quiet = TRUE)
+VaseuxLakeCBC <- sf::st_read("data/NathanCBCkmls/VaseuxLakeCBC_Circle.kml", 
+                             layer = "VaseuxLakeCBC_Circle",
+                             quiet = TRUE)
+
+## Reproject to EPSG:4326
+OliverOsoyoosCBC_wgs84 <- sf::st_transform(OliverOsoyoosCBC, 4326)
+VaseuxLakeCBC_wgs84 <- sf::st_transform(VaseuxLakeCBC, 4326)
+```
+
+Dave does not have a circle for apex so I'm approximating the centroid of the circles on the Birds Canada CBC map and rolling with that.
+
+```{r MakeApexCircle, echo = TRUE}
+## Set the centroid (Note: this is approximate)
+ApexCentroid <- sf::st_sfc(
+  sf::st_point(c(-119.911581, 49.308790)),  # lon, lat
+  crs = 4326)
+
+## Project to EPSG:3005 = BC Albers
+ApexCentroid_proj <- sf::st_transform(ApexCentroid, 3005)
+
+## Make the circle (12km radius)
+ApexCBCcircle <- sf::st_buffer(ApexCentroid_proj, dist = 12000)
+
+## Reproject to EPSG:4326
+ApexCBCcircle_wgs84 <- sf::st_transform(ApexCBCcircle, 4326)
+```
+
 ## Data in Collections
 
-As a first step we're thinking of seeing the data available from the digitized Odonata holdings of the BC Entomology Collections from Gibson et al (2024; Can. Entomol. 156(e42): 1–16. doi:10.4039/tce.2024.38). 
+### Odonate data from Gibson et al (2024)
 
-```{r NhcDataReadIn, echo = TRUE}
+Now that we have the circles lets bring in the digitized Odonata holdings of the BC Entomology Collections from Gibson et al (2024; Can. Entomol. 156(e42): 1–16. doi:10.4039/tce.2024.38). 
+
+```{r NhcOdeDataReadIn, echo = TRUE}
 ## Read in Gibson data
 GibsonDF <- read.csv("data/GibsonData/Gibson2024CanEntSup002.csv")
 
@@ -35,36 +76,6 @@ GibsonDF <- GibsonDF %>%
 ## Restrict the datset to just BC records
 GibsonBC <- GibsonDF %>% 
   dplyr::filter(Prov_State == "British Columbia")
-```
-
-Now that we have the dataset, we want to look at which Christmas Bird Count circles in the South Okanagan-Similkameen have data, and how much. To do this we need to first make the circles. We'll do this based off of an approximate centroid of the circles (in a later itteration I'll get these from Birds Canada or Dave Bell). We'll do this for the Apex circle, the Vaseux circle, and the Oliver-Osoyoos circle.
-
-```{r MakeCircles, echo = TRUE}
-## First we'll set the centroid of our count circles (Note: this is approximate)
-ApexCentroid <- sf::st_sfc(
-  sf::st_point(c(-119.911581, 49.308790)),  # lon, lat
-  crs = 4326)
-OliverCentroid <- sf::st_sfc(
-  sf::st_point(c(-119.521697, 49.085022)),  # lon, lat
-  crs = 4326)
-VaseuxCentroid <- sf::st_sfc(
-  sf::st_point(c(-119.592627, 49.308124)),  # lon, lat
-  crs = 4326)
-
-## Now we'll make sure that they're all projected to EPSG:3005 = BC Albers
-ApexCentroid_proj <- sf::st_transform(ApexCentroid, 3005)
-OliverCentroid_proj <- sf::st_transform(OliverCentroid, 3005)
-VaseuxCentroid_proj <- sf::st_transform(VaseuxCentroid, 3005) 
-
-## Now that they're in BC Albers we can make the circle (12km radius)
-ApexCBCcircle <- sf::st_buffer(ApexCentroid_proj, dist = 12000)
-OliverCBCcircle <- sf::st_buffer(OliverCentroid_proj, dist = 12000)
-VaseuxCBCcircle <- sf::st_buffer(VaseuxCentroid_proj, dist = 12000)
-
-## Now lets reproject them to EPSG:4326
-ApexCBCcircle_wgs84 <- sf::st_transform(ApexCBCcircle, 4326)
-OliverCBCcircle_wgs84 <- sf::st_transform(OliverCBCcircle, 4326)
-VaseuxCBCcircle_wgs84 <- sf::st_transform(VaseuxCBCcircle, 4326)
 
 ## Finally we need to make sure that the Gibson data are in the right projection
 GibsonBC_sf <- GibsonBC %>% 
@@ -75,191 +86,561 @@ GibsonBC_sf <- GibsonBC %>%
 
 Now that we've got that sorted we can subset the data in the Gibson dataset to those records within these circles.
 
-```{r NhcCut2Circles, echo = TRUE, warning = FALSE}
+```{r NhcOdeCut2Circles, echo = TRUE, warning = FALSE}
 ## Filter the data to the circles
-ApexRecords <- GibsonBC_sf %>% 
+ApexOdeRecords <- GibsonBC_sf %>% 
   dplyr::filter(sf::st_intersects(., ApexCBCcircle_wgs84, sparse = FALSE)[, 1])
-OliverRecords <- GibsonBC_sf %>% 
-  dplyr::filter(sf::st_intersects(., OliverCBCcircle_wgs84, sparse = FALSE)[, 1])
-VaseuxRecords <- GibsonBC_sf %>% 
-  dplyr::filter(sf::st_intersects(., VaseuxCBCcircle_wgs84, sparse = FALSE)[, 1])
+OliverOdeRecords <- GibsonBC_sf %>% 
+  dplyr::filter(sf::st_intersects(., OliverOsoyoosCBC_wgs84, sparse = FALSE)[, 1])
+VaseuxOdeRecords <- GibsonBC_sf %>% 
+  dplyr::filter(sf::st_intersects(., VaseuxLakeCBC_wgs84, sparse = FALSE)[, 1])
 ```
 
 Now we can do some quick summary stats to see how much data is in each dataset
 
-```{r NhcSummStats, echo = TRUE}
+```{r NhcOdeSummStats, echo = TRUE}
 ## How many specimens in each circle
-nrow(ApexRecords)
-nrow(OliverRecords)
-nrow(VaseuxRecords)
+nrow(ApexOdeRecords)
+nrow(OliverOdeRecords)
+nrow(VaseuxOdeRecords)
 
 ## How many species (ItemName) in each circle
-length(unique(ApexRecords$ItemName))
-length(unique(OliverRecords$ItemName))
-length(unique(VaseuxRecords$ItemName))
+length(unique(ApexOdeRecords$ItemName))
+length(unique(OliverOdeRecords$ItemName))
+length(unique(VaseuxOdeRecords$ItemName))
 
 ## Now lets see how many of each species
-ApexRecSppCounts <- ApexRecords %>%
+ApexOdeRecSppCounts <- ApexOdeRecords %>%
   dplyr::group_by(ItemName) %>% 
   dplyr::summarise(count = n(), .groups = "drop") %>%
   dplyr::arrange(dplyr::desc(count)) 
-OliverRecSppCounts <- OliverRecords %>%
+OliverOdeRecSppCounts <- OliverOdeRecords %>%
   dplyr::group_by(ItemName) %>% 
   dplyr::summarise(count = n(), .groups = "drop") %>%
   dplyr::arrange(dplyr::desc(count))
-VaseuxRecSppCounts <- VaseuxRecords %>%
+VaseuxOdeRecSppCounts <- VaseuxOdeRecords %>%
   dplyr::group_by(ItemName) %>% 
   dplyr::summarise(count = n(), .groups = "drop") %>%
   dplyr::arrange(dplyr::desc(count))
 
 ## What are the top 5 spp and how many records do they have?
-head(sf::st_drop_geometry(ApexRecSppCounts))
-head(sf::st_drop_geometry(OliverRecSppCounts))
-head(sf::st_drop_geometry(VaseuxRecSppCounts))
+head(sf::st_drop_geometry(ApexOdeRecSppCounts))
+head(sf::st_drop_geometry(OliverOdeRecSppCounts))
+head(sf::st_drop_geometry(VaseuxOdeRecSppCounts))
 ```
 
 How many species have 1 specimen, 2 specimens, etc?
 
-```{r NhcCircleSppHists, echo = TRUE}
-ggplot(ApexRecSppCounts, aes(x = count)) +
+```{r NhcOdeCircleSppHists, echo = TRUE}
+ggplot(ApexOdeRecSppCounts, aes(x = count)) +
   geom_histogram(binwidth = 1, fill = "steelblue", color = "black") +
   labs(
-    x = "Number of records per Species",
+    x = "Number of Ode records per Species",
     y = "Number of Species",
-    title = "Distribution of Records per Species (Apex)"
+    title = "Distribution of Ode Records per Species (Apex)"
   ) +
   theme_minimal()
 
-ggplot(OliverRecSppCounts, aes(x = count)) +
+ggplot(OliverOdeRecSppCounts, aes(x = count)) +
   geom_histogram(binwidth = 1, fill = "steelblue", color = "black") +
   labs(
-    x = "Number of records per Species",
+    x = "Number of Ode records per Species",
     y = "Number of Species",
-    title = "Distribution of Records per Species (Oliver)"
+    title = "Distribution of Ode Records per Species (Oliver)"
   ) +
   theme_minimal()
 
-ggplot(VaseuxRecSppCounts, aes(x = count)) +
+ggplot(VaseuxOdeRecSppCounts, aes(x = count)) +
   geom_histogram(binwidth = 1, fill = "steelblue", color = "black") +
   labs(
-    x = "Number of records per Species",
+    x = "Number of Ode records per Species",
     y = "Number of Species",
-    title = "Distribution of Records per Species (Vaseux)"
+    title = "Distribution of Ode Records per Species (Vaseux)"
   ) +
   theme_minimal()
 ```
 
-Okay so now we know what's going on in the BC collections.
+Now we know what's going on in the BC ode collections according to Gibson et al (2024) for these circles.
+
+### Butterfly data from GBIF
+
+Now that we have the circles lets bring in the digitized butterfly data available on GBIF.
+
+```{r NhcButtDataReadIn, echo = TRUE}
+## Make a download request for GBIF data... I'm using an occ_download
+## instead of an occ_search because i) it lets me pull multiple families
+## and ii) it lets me exclude iNat data explicitly. 
+# dl <- rgbif::occ_download(
+#   pred_in("taxonKey", c(6951,    ## Hedylidae
+#                         6953,    ## Hesperiidae
+#                         5473,    ## Lycaenidae
+#                         7017,    ## Nymphalidae
+#                         9417,    ## Papilionidae
+#                         5481,    ## Pieridae
+#                         1933999  ## Riodinidae
+#   )),
+#   pred("GADM_GID", "CAN.2_1"),
+#   pred("hasCoordinate", TRUE),
+#   pred_not(
+#     pred("publishingOrg", "28eb1a3f-1c15-4a95-931a-4af90ecb574d")
+#   ),
+#   format = "SIMPLE_CSV",
+#   user  = Sys.getenv("GBIF_USER"),
+#   pwd   = Sys.getenv("GBIF_PWD"),
+#   email = Sys.getenv("GBIF_EMAIL"))
+# 
+# ## Check the status of that download with 
+# occ_download_wait(dl)
+# 
+# ## get some metadata
+# meta <- occ_download_meta(dl)
+# 
+# ## get that download
+# d <- occ_download_get(dl) %>%
+#   occ_download_import()
+# 
+# ## Finally we need to make sure that the Gibson data are in the right projection
+# GbifButtData_sf <- d %>% 
+#   dplyr::rename(Longitude = decimalLongitude, 
+#                 Latitude = decimalLatitude) %>% 
+#   sf::st_as_sf(coords = c("Longitude", "Latitude"),
+#                crs = 4326,
+#                remove = FALSE)
+# 
+# ## Write this into the data
+# saveRDS(GbifButtData_sf, "data/GbifData/GbifButtData_sf.rds")
+
+## Read the data back in
+GbifButtData <- readRDS("data/GbifData/GbifButtData_sf.rds")
+
+## Remove obs that aren't IDed to spp
+GbifButtData <- GbifButtData %>% 
+  dplyr::filter(!is.na(species) & species != "")
+```
+
+The GBIF download DOI is `meta$doi`.
+
+Now that we've got that sorted we can subset the data in the GBIF dataset to those records within these circles.
+
+```{r NhcButtCut2Circles, echo = TRUE, warning = FALSE}
+## Filter the data to the circles
+ApexButtRecords <- GbifButtData %>% 
+  dplyr::filter(sf::st_intersects(., ApexCBCcircle_wgs84, sparse = FALSE)[, 1])
+OliverButtRecords <- GbifButtData %>% 
+  dplyr::filter(sf::st_intersects(., OliverOsoyoosCBC_wgs84, sparse = FALSE)[, 1])
+VaseuxButtRecords <- GbifButtData %>% 
+  dplyr::filter(sf::st_intersects(., VaseuxLakeCBC_wgs84, sparse = FALSE)[, 1])
+```
+
+Now we can do some quick summary stats to see how much data is in each dataset
+
+```{r NhcButtSummStats, echo = TRUE}
+## How many specimens in each circle
+nrow(ApexButtRecords)
+nrow(OliverButtRecords)
+nrow(VaseuxButtRecords)
+
+## How many species in each circle
+length(unique(ApexButtRecords$species))
+length(unique(OliverButtRecords$species))
+length(unique(VaseuxButtRecords$species))
+
+## Now lets see how many of each species
+ApexButtRecSppCounts <- ApexButtRecords %>%
+  dplyr::group_by(species) %>% 
+  dplyr::summarise(count = n(), .groups = "drop") %>%
+  dplyr::arrange(dplyr::desc(count)) 
+OliverButtRecSppCounts <- OliverButtRecords %>%
+  dplyr::group_by(species) %>% 
+  dplyr::summarise(count = n(), .groups = "drop") %>%
+  dplyr::arrange(dplyr::desc(count))
+VaseuxButtRecSppCounts <- VaseuxButtRecords %>%
+  dplyr::group_by(species) %>% 
+  dplyr::summarise(count = n(), .groups = "drop") %>%
+  dplyr::arrange(dplyr::desc(count))
+
+## What are the top 5 spp and how many records do they have?
+head(sf::st_drop_geometry(ApexButtRecSppCounts))
+head(sf::st_drop_geometry(OliverButtRecSppCounts))
+head(sf::st_drop_geometry(VaseuxButtRecSppCounts))
+```
+
+How many species have 1 specimen, 2 specimens, etc?
+
+```{r NhcButtCircleSppHists, echo = TRUE}
+ggplot(ApexButtRecSppCounts, aes(x = count)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "black") +
+  labs(
+    x = "Number of Butt records per Species",
+    y = "Number of Species",
+    title = "Distribution of Butt Records per Species (Apex)"
+  ) +
+  theme_minimal()
+
+ggplot(OliverButtRecSppCounts, aes(x = count)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "black") +
+  labs(
+    x = "Number of Butt records per Species",
+    y = "Number of Species",
+    title = "Distribution of Butt Records per Species (Oliver)"
+  ) +
+  theme_minimal()
+
+ggplot(VaseuxButtRecSppCounts, aes(x = count)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "black") +
+  labs(
+    x = "Number of Butt records per Species",
+    y = "Number of Species",
+    title = "Distribution of Butt Records per Species (Vaseux)"
+  ) +
+  theme_minimal()
+```
+
+Now we know what's going on in the BC Butt collections according to GBIF for these circles.
 
 ## Data on iNaturalist
 
-Lets look at iNat to see how many records there are in the iNat dataset for Odonata. This dataset is much younger but will likely have more recent data. The data we'll use were downloaded from iNaturalist through the Export function on 2025-12-16. Note, some of these records are obscured... we'll start by not removing them but keep that in mind.
+Lets look at iNat to see how many records there are in the iNat dataset for Odonata and Papilionoidea. This dataset is much younger but will likely have more recent data. The data we'll use were downloaded from iNaturalist through the Export function on 2026-01-13. Note, some of these records are obscured... we'll start by not removing them but keep that in mind.
+
+### Odonate iNat data
 
 Now we'll read in the iNat data. 
 
-```{r iNatDataReadIn, echo = TRUE}
+```{r iNatOdeDataReadIn, echo = TRUE}
 ## Read in the data
-iNatDF <- read.csv("data/iNatData/iNatOdesBC2025DEC16.csv")
+iNatOdeDF <- read.csv("data/iNatData/iNatOdesBC2026JAN13.csv")
 
-## Keep only reseach grade obs
-iNatRG <- iNatDF %>% 
+## Keep only research grade obs
+iNatOdeRG <- iNatOdeDF %>% 
   dplyr::filter(quality_grade == "research")
 
 ## Keep only CC0, CC-BY, CC-BY-NC records so you don't go to jail for 1B years 
-iNatRG_CC <- iNatRG %>% 
+iNatOdeRG_CC <- iNatOdeRG %>% 
   dplyr::filter(license %in% c("CC0", "CC-BY", "CC-BY-NC"))
 
-## Remove read.csv2()## Remove all data with big (>5km) or NA accuracies
-iNatRG_CC_acc <- iNatRG_CC %>% 
+## Remove read.csv2()## Remove all data with big (>5km) or NA accuracy 
+iNatOdeRG_CC_acc <- iNatOdeRG_CC %>% 
   dplyr::filter(positional_accuracy < 5000)
 
 ## Change the Lat and long columns to Lat and Long
-iNatRG_CC_acc <- iNatRG_CC_acc %>% 
+iNatOdeRG_CC_acc <- iNatOdeRG_CC_acc %>% 
   dplyr::rename("Longitude" = "longitude") %>% 
   dplyr::rename("Latitude" = "latitude")
 
-## Finally we need to make sure that the Gibson data are in the right projection
-iNat_sf <- iNatRG_CC_acc %>% 
+## Finally we need to make sure that the iNat data are in the right projection
+iNatOde_sf <- iNatOdeRG_CC_acc %>% 
   sf::st_as_sf(coords = c("Longitude", "Latitude"),
                crs = 4326,
                remove = FALSE)
 ```
 
-Now that we have the iNat data read in and cleaned lets filter to theose same circles as before.
+Now that we have the iNat data read in and cleaned lets filter to the same circles as before.
 
-```{r iNatCut2Circles, echo = TRUE, warning = FALSE}
+```{r iNatOdeCut2Circles, echo = TRUE, warning = FALSE}
 ## Filter the data to the circles
-ApexObs <- iNat_sf %>% 
+ApexOdeObs <- iNatOde_sf %>% 
   dplyr::filter(sf::st_intersects(., ApexCBCcircle_wgs84, sparse = FALSE)[, 1])
-OliverObs <- iNat_sf %>% 
-  dplyr::filter(sf::st_intersects(., OliverCBCcircle_wgs84, sparse = FALSE)[, 1])
-VaseuxObs <- iNat_sf %>% 
-  dplyr::filter(sf::st_intersects(., VaseuxCBCcircle_wgs84, sparse = FALSE)[, 1])
+OliverOdeObs <- iNatOde_sf %>% 
+  dplyr::filter(sf::st_intersects(., OliverOsoyoosCBC_wgs84, sparse = FALSE)[, 1])
+VaseuxOdeObs <- iNatOde_sf %>% 
+  dplyr::filter(sf::st_intersects(., VaseuxLakeCBC_wgs84, sparse = FALSE)[, 1])
 ```
 
 Now we can do some quick summary stats to see how much data is in each dataset
 
-```{r iNatSummStats, echo = TRUE}
+```{r iNatOdeSummStats, echo = TRUE}
 ## How many specimens in each circle
-nrow(ApexObs)
-nrow(OliverObs)
-nrow(VaseuxObs)
+nrow(ApexOdeObs)
+nrow(OliverOdeObs)
+nrow(VaseuxOdeObs)
 
 ## How many species (scientific_name) in each circle
-length(unique(ApexObs$scientific_name))
-length(unique(OliverObs$scientific_name))
-length(unique(VaseuxObs$scientific_name))
+length(unique(ApexOdeObs$scientific_name))
+length(unique(OliverOdeObs$scientific_name))
+length(unique(VaseuxOdeObs$scientific_name))
 
 ## Now lets see how many of each species
-ApexObsSppCounts <- ApexObs %>%
+ApexOdeObsSppCounts <- ApexOdeObs %>%
   dplyr::group_by(scientific_name) %>% 
   dplyr::summarise(count = n(), .groups = "drop") %>%
   dplyr::arrange(dplyr::desc(count))
-OliverObsSppCounts <- OliverObs %>%
+OliverOdeObsSppCounts <- OliverOdeObs %>%
   dplyr::group_by(scientific_name) %>% 
   dplyr::summarise(count = n(), .groups = "drop") %>%
   dplyr::arrange(dplyr::desc(count))
-VaseuxObsSppCounts <- VaseuxObs %>%
+VaseuxOdeObsSppCounts <- VaseuxOdeObs %>%
   dplyr::group_by(scientific_name) %>% 
   dplyr::summarise(count = n(), .groups = "drop") %>%
   dplyr::arrange(dplyr::desc(count))
 
 ## What are the top 5 spp and how many records do they have?
-head(sf::st_drop_geometry(ApexObsSppCounts))
-head(sf::st_drop_geometry(OliverObsSppCounts))
-head(sf::st_drop_geometry(VaseuxObsSppCounts))
+head(sf::st_drop_geometry(ApexOdeObsSppCounts))
+head(sf::st_drop_geometry(OliverOdeObsSppCounts))
+head(sf::st_drop_geometry(VaseuxOdeObsSppCounts))
 ```
 
 How many species have 1 specimen, 2 specimens, etc?
 
-```{r iNatCircleSppHists, echo = TRUE}
-ggplot(ApexObsSppCounts, aes(x = count)) +
+```{r iNatOdeCircleSppHists, echo = TRUE}
+ggplot(ApexOdeObsSppCounts, aes(x = count)) +
   geom_histogram(binwidth = 1, fill = "steelblue", color = "black") +
   labs(
-    x = "Number of observations per Species",
+    x = "Number of Ode observations per Species",
     y = "Number of Species",
-    title = "Distribution of Observations per Species (Apex)"
+    title = "Distribution of Ode Observations per Species (Apex)"
   ) +
   theme_minimal()
 
-ggplot(OliverObsSppCounts, aes(x = count)) +
+ggplot(OliverOdeObsSppCounts, aes(x = count)) +
   geom_histogram(binwidth = 1, fill = "steelblue", color = "black") +
   labs(
-    x = "Number of observations per Species",
+    x = "Number of Ode observations per Species",
     y = "Number of Species",
-    title = "Distribution of Observations per Species (Oliver)"
+    title = "Distribution of Ode Observations per Species (Oliver)"
   ) +
   theme_minimal()
 
-ggplot(VaseuxObsSppCounts, aes(x = count)) +
+ggplot(VaseuxOdeObsSppCounts, aes(x = count)) +
   geom_histogram(binwidth = 1, fill = "steelblue", color = "black") +
   labs(
-    x = "Number of observations per Species",
+    x = "Number of Ode observations per Species",
     y = "Number of Species",
-    title = "Distribution of Observations per Species (Vaseux)"
+    title = "Distribution of Ode Observations per Species (Vaseux)"
   ) +
   theme_minimal()
 ```
 
-Okay, now that we've done that we can see that the two datasets are (at least) superficially similar. Let's do some comparisons. 
+Now that we've done that we can see that the two datasets are (at least) superficially similar for Odonates.
+
+### Butterfly iNat data
+
+Now we'll read in the iNat data. 
+
+```{r iNatButtDataReadIn, echo = TRUE}
+## Read in the data
+iNatButtDF <- read.csv("data/iNatData/iNatButtsBC2026JAN13.csv")
+
+## Keep only research grade obs
+iNatButtRG <- iNatButtDF %>% 
+  dplyr::filter(quality_grade == "research")
+
+## Keep only CC0, CC-BY, CC-BY-NC records so you don't go to jail for 1B years 
+iNatButtRG_CC <- iNatButtRG %>% 
+  dplyr::filter(license %in% c("CC0", "CC-BY", "CC-BY-NC"))
+
+## Remove read.csv2()## Remove all data with big (>5km) or NA accuracy 
+iNatButtRG_CC_acc <- iNatButtRG_CC %>% 
+  dplyr::filter(positional_accuracy < 5000)
+
+## Change the Lat and long columns to Lat and Long
+iNatButtRG_CC_acc <- iNatButtRG_CC_acc %>% 
+  dplyr::rename("Longitude" = "longitude") %>% 
+  dplyr::rename("Latitude" = "latitude")
+
+## Finally we need to make sure that the iNat data are in the right projection
+iNatButt_sf <- iNatButtRG_CC_acc %>% 
+  sf::st_as_sf(coords = c("Longitude", "Latitude"),
+               crs = 4326,
+               remove = FALSE)
+```
+
+Now that we have the iNat data read in and cleaned lets filter to the same circles as before.
+
+```{r iNatButtCut2Circles, echo = TRUE, warning = FALSE}
+## Filter the data to the circles
+ApexButtObs <- iNatButt_sf %>% 
+  dplyr::filter(sf::st_intersects(., ApexCBCcircle_wgs84, sparse = FALSE)[, 1])
+OliverButtObs <- iNatButt_sf %>% 
+  dplyr::filter(sf::st_intersects(., OliverOsoyoosCBC_wgs84, sparse = FALSE)[, 1])
+VaseuxButtObs <- iNatButt_sf %>% 
+  dplyr::filter(sf::st_intersects(., VaseuxLakeCBC_wgs84, sparse = FALSE)[, 1])
+```
+
+Now we can do some quick summary stats to see how much data is in each dataset
+
+```{r iNatButtSummStats, echo = TRUE}
+## How many specimens in each circle
+nrow(ApexButtObs)
+nrow(OliverButtObs)
+nrow(VaseuxButtObs)
+
+## How many species (scientific_name) in each circle
+length(unique(ApexButtObs$scientific_name))
+length(unique(OliverButtObs$scientific_name))
+length(unique(VaseuxButtObs$scientific_name))
+
+## Now lets see how many of each species
+ApexButtObsSppCounts <- ApexButtObs %>%
+  dplyr::group_by(scientific_name) %>% 
+  dplyr::summarise(count = n(), .groups = "drop") %>%
+  dplyr::arrange(dplyr::desc(count))
+OliverButtObsSppCounts <- OliverButtObs %>%
+  dplyr::group_by(scientific_name) %>% 
+  dplyr::summarise(count = n(), .groups = "drop") %>%
+  dplyr::arrange(dplyr::desc(count))
+VaseuxButtObsSppCounts <- VaseuxButtObs %>%
+  dplyr::group_by(scientific_name) %>% 
+  dplyr::summarise(count = n(), .groups = "drop") %>%
+  dplyr::arrange(dplyr::desc(count))
+
+## What are the top 5 spp and how many records do they have?
+head(sf::st_drop_geometry(ApexButtObsSppCounts))
+head(sf::st_drop_geometry(OliverButtObsSppCounts))
+head(sf::st_drop_geometry(VaseuxButtObsSppCounts))
+```
+
+How many species have 1 specimen, 2 specimens, etc?
+
+```{r iNatButtCircleSppHists, echo = TRUE}
+ggplot(ApexButtObsSppCounts, aes(x = count)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "black") +
+  labs(
+    x = "Number of Butt observations per Species",
+    y = "Number of Species",
+    title = "Distribution of Butt Observations per Species (Apex)"
+  ) +
+  theme_minimal()
+
+ggplot(OliverButtObsSppCounts, aes(x = count)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "black") +
+  labs(
+    x = "Number of Butt observations per Species",
+    y = "Number of Species",
+    title = "Distribution of Butt Observations per Species (Oliver)"
+  ) +
+  theme_minimal()
+
+ggplot(VaseuxButtObsSppCounts, aes(x = count)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "black") +
+  labs(
+    x = "Number of Butt observations per Species",
+    y = "Number of Species",
+    title = "Distribution of Butt Observations per Species (Vaseux)"
+  ) +
+  theme_minimal()
+```
+
+Now that we've done that we can see that the two datasets are (at least) superficially similar for Butterflies.
+
+## Comparative analyses
+
+How does this all look between datasets and taxa?
+
+```{r , echo = TRUE}
+## Odonata Museum N Specimens
+nrow(ApexOdeRecords)
+nrow(OliverOdeRecords)
+nrow(VaseuxOdeRecords)
+
+## Papilionoidea Museum N Specimens
+nrow(ApexButtRecords)
+nrow(OliverButtRecords)
+nrow(VaseuxButtRecords)
+
+## Odonata iNat N Observations
+nrow(ApexOdeObs)
+nrow(OliverOdeObs)
+nrow(VaseuxOdeObs)
+
+## Papilionoidea iNat N Observations
+nrow(ApexButtObs)
+nrow(OliverButtObs)
+nrow(VaseuxButtObs)
+
+## Odonata iNat N Species
+length(unique(ApexOdeObs$scientific_name))
+length(unique(OliverOdeObs$scientific_name))
+length(unique(VaseuxOdeObs$scientific_name))
+
+## Papilionoidea iNat N Species
+length(unique(ApexButtObs$scientific_name))
+length(unique(OliverButtObs$scientific_name))
+length(unique(VaseuxButtObs$scientific_name))
+
+## Odonata Museum N Species
+length(unique(ApexOdeRecords$ItemName))
+length(unique(OliverOdeRecords$ItemName))
+length(unique(VaseuxOdeRecords$ItemName))
+
+## Papilionoidea Museum N Species
+length(unique(ApexButtRecords$species))
+length(unique(OliverButtRecords$species))
+length(unique(VaseuxButtRecords$species))
+
+summary_df <- data.frame(
+  Site = c("Apex", "Oliver", "Vaseux"),
+
+  ## Odonata — Museum
+  Odonata_Museum_Specimens = c(
+    nrow(ApexOdeRecords),
+    nrow(OliverOdeRecords),
+    nrow(VaseuxOdeRecords)
+  ),
+  Odonata_Museum_Species = c(
+    length(unique(ApexOdeRecords$ItemName)),
+    length(unique(OliverOdeRecords$ItemName)),
+    length(unique(VaseuxOdeRecords$ItemName))
+  ),
+
+  ## Odonata — iNaturalist
+  Odonata_iNat_Observations = c(
+    nrow(ApexOdeObs),
+    nrow(OliverOdeObs),
+    nrow(VaseuxOdeObs)
+  ),
+  Odonata_iNat_Species = c(
+    length(unique(ApexOdeObs$scientific_name)),
+    length(unique(OliverOdeObs$scientific_name)),
+    length(unique(VaseuxOdeObs$scientific_name))
+  ),
+
+  ## Papilionoidea — Museum
+  Papilionoidea_Museum_Specimens = c(
+    nrow(ApexButtRecords),
+    nrow(OliverButtRecords),
+    nrow(VaseuxButtRecords)
+  ),
+  Papilionoidea_Museum_Species = c(
+    length(unique(ApexButtRecords$species)),
+    length(unique(OliverButtRecords$species)),
+    length(unique(VaseuxButtRecords$species))
+  ),
+
+  ## Papilionoidea — iNaturalist
+  Papilionoidea_iNat_Observations = c(
+    nrow(ApexButtObs),
+    nrow(OliverButtObs),
+    nrow(VaseuxButtObs)
+  ),
+  Papilionoidea_iNat_Species = c(
+    length(unique(ApexButtObs$scientific_name)),
+    length(unique(OliverButtObs$scientific_name)),
+    length(unique(VaseuxButtObs$scientific_name))
+  ),
+
+  stringsAsFactors = FALSE
+)
+
+## Flip the table so it's more readable
+summary_df_t <- summary_df |>
+  tibble::column_to_rownames("Site") |>
+  t() |>
+  as.data.frame()
+
+```
+
+```{r CompTable}
+knitr::kable(
+  summary_df_t,
+  caption = "Summary of Odonata and Papilionoidea records and observations by site",
+  booktabs = TRUE,
+  longtable = FALSE
+)
+```
+
+
+
+
+
+
 
