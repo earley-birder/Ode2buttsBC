@@ -622,23 +622,48 @@ summary_df <- data.frame(
 )
 
 ## Flip the table so it's more readable
-summary_df_t <- summary_df |>
+summary_df_all <- summary_df |>
   tibble::column_to_rownames("Site") |>
   t() |>
   as.data.frame()
 
+summary_df_spp <- summary_df_all %>%
+  tibble::rownames_to_column("metric") %>%
+  dplyr::filter(grepl("Species", metric)) %>%
+  tibble::column_to_rownames("metric")
+  
+summary_df_obs <- summary_df_all %>%
+  tibble::rownames_to_column("metric") %>%
+  dplyr::filter(!grepl("Species", metric)) %>%
+  tibble::column_to_rownames("metric")
 ```
 
-```{r CompTable}
+```{r CompTableAll}
 knitr::kable(
-  summary_df_t,
+  summary_df_all,
   caption = "Summary of Odonata and Papilionoidea records and observations by site",
   booktabs = TRUE,
   longtable = FALSE
 )
 ```
 
+```{r CompTableSpp}
+knitr::kable(
+  summary_df_spp,
+  caption = "Summary of Odonata and Papilionoidea species by site",
+  booktabs = TRUE,
+  longtable = FALSE
+)
+```
 
+```{r CompTableObs}
+knitr::kable(
+  summary_df_obs,
+  caption = "Summary of Odonata and Papilionoidea records by site",
+  booktabs = TRUE,
+  longtable = FALSE
+)
+```
 
 
 
