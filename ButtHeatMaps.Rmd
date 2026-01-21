@@ -1,0 +1,556 @@
+---
+title: "ButtHeatmap"
+author: "Nathan G. Earley"
+date: "`r Sys.Date()`"
+output: pdf_document
+header-includes:
+  - \usepackage{pdflscape}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(rinat)
+library(rgbif)
+library(sf)
+library(rnaturalearth)
+library(patchwork)
+library(cowplot)
+library(purrr)
+library(tibble)
+```
+
+# Intro
+
+I want to look into making heatmaps of Butt records in BC based on the data available on iNat and in GBIF (excluding iNat).
+
+# Methods
+
+## Data
+
+The data were downloaded from the internet and are stored on my own machine. I can send them if you need them. 
+
+### iNaturalist data
+
+For this we'll use the Butt data that I pulled from iNat on Jan 13, 2026. 
+
+```{r iNatButtDataReadIn, echo = TRUE}
+## Read in the data
+iNatButtDF <- read.csv("data/iNatData/iNatButtsBC2026JAN13.csv",
+                      na.strings = c("", " "),
+                      stringsAsFactors = FALSE)
+
+## Keep only research grade obs
+iNatButtRG <- iNatButtDF %>% 
+  dplyr::filter(quality_grade == "research")
+
+## Keep only CC0, CC-BY, CC-BY-NC records so you don't go to jail for 1B years 
+iNatButtRG_CC <- iNatButtRG %>% 
+  dplyr::filter(license %in% c("CC0", "CC-BY", "CC-BY-NC"))
+
+## Remove all data with big (>5km) or NA accuracy 
+iNatButtRG_CC_acc <- iNatButtRG_CC %>% 
+  dplyr::filter(is.na(positional_accuracy) | positional_accuracy < 5000)
+
+## Change the Lat and long columns to Lat and Long
+iNatButtRG_CC_acc <- iNatButtRG_CC_acc %>% 
+  dplyr::rename("Longitude" = "longitude") %>% 
+  dplyr::rename("Latitude" = "latitude")
+
+## Make sure that the iNat data are in the right projection
+iNatButt_sf <- iNatButtRG_CC_acc %>% 
+  sf::st_as_sf(coords = c("Longitude", "Latitude"),
+               crs = 4326,
+               remove = FALSE)
+
+## Make a new row called genus_species and remove records that are blank
+iNatButt_sf <- iNatButt_sf %>%
+  dplyr::mutate(genus_species = ifelse(lengths(strsplit(scientific_name, 
+                                                        "\\s+")) >= 2,
+                                       sub("^([^ ]+ [^ ]+).*$", "\\1",
+                                           scientific_name),
+                                       NA_character_)) %>% 
+  dplyr::filter(!is.na(genus_species))
+```
+
+### GBIF data
+
+And I'll bring in the digitized Odonata holdings of the BC Entomology Collections from GBIF. 
+
+```{r NhcButtDataReadIn, echo = TRUE}
+## Read in Gbif data
+GbifDF <- readRDS("data/GbifData/GbifButtData_sf.rds")
+
+################################
+## --- Deal with synonyms --- ##
+
+# library(stringr)
+
+GbifDF_clean <- GbifDF %>%
+  mutate(
+    # Step 1: Start with 'scientificName' or 'verbatimScientificName'
+    species_raw = scientificName,  
+
+    # Step 2: Strip BOLD codes (BOLD:XXXXX)
+    species_clean = str_remove(species_raw, "^BOLD:\\w+"),
+
+    # Step 3: Strip authorship / parentheses
+    species_clean = str_trim(str_remove(species_clean, "\\s*\\(.*\\)$")),
+
+    # Step 4: Keep only binomial (genus + species)
+    species_binomial = str_extract(species_clean, "^[A-Z][a-z]+\\s[a-z]+")
+  )
+
+
+species_vec <- unique(GbifDF_clean$species_binomial)
+
+gbif_backbone <- map_dfr(
+  species_vec,
+  function(x) {
+    if (is.na(x)) return(tibble(species_original = x, species_accepted = NA, tax_status = NA))
+    res <- try(rgbif::name_backbone(name = x, rank = "species"), silent = TRUE)
+    if (inherits(res, "try-error")) return(tibble(species_original = x, species_accepted = NA, tax_status = NA))
+    tibble(
+      species_original = x,
+      species_accepted = res$species,
+      tax_status = res$status
+    )
+  }
+)
+
+GbifDF_clean <- GbifDF_clean %>%
+  left_join(gbif_backbone, by = c("species_binomial" = "species_original")) %>%
+  mutate(final_species = coalesce(species_accepted, species_binomial))
+
+
+## Remove rows with NA Lat Long data
+GbifDF_clean <- GbifDF_clean %>%
+  dplyr::mutate(Longitude = as.numeric(Longitude),
+                Latitude  = as.numeric(Latitude)) %>% 
+  dplyr::filter(!is.na(Longitude), !is.na(Latitude))
+
+## Make sure that the GBIF data are in the right projection
+GbifDF_sf <- GbifDF_clean %>% 
+  sf::st_as_sf(coords = c("Longitude", "Latitude"),
+               crs = 4326,
+               remove = FALSE)
+
+## Make a new row called genus_species and remove records that are blank
+GbifDF_sf <- GbifDF_sf %>%
+  dplyr::mutate(genus_species = ifelse(lengths(strsplit(species, 
+                                                        "\\s+")) >= 2,
+                                       sub("^([^ ]+ [^ ]+).*$", "\\1",
+                                           species),
+                                       NA_character_)) %>% 
+  dplyr::filter(!is.na(genus_species))
+```
+
+### Mapping data
+
+Read in a shapefile for BC. 
+
+```{r BCspatialReadIn, echo = TRUE}
+bc_sf <- rnaturalearth::ne_states(country = "Canada",
+                                  returnclass = "sf") %>% 
+  dplyr::filter(name == "British Columbia") %>% 
+  sf::st_transform(3153)
+
+## Vectorize the shp
+bc_v <- terra::vect(bc_sf)
+
+## Generate a raster template
+r_template <- terra::rast(extent = terra::ext(bc_v),
+                          resolution = 25000,   # meters
+                          crs = terra::crs(bc_v))
+```
+
+## Heatmap generation
+
+As a first step I want to get everything formatted for regular stand alone heat maps.
+
+```{r iNatHeatmap, echo = TRUE}
+
+###################
+## --- Setup --- ##
+
+iNatButt_sf_proj <- iNatButt_sf %>% 
+  sf::st_transform(3153)
+
+## Vectorize the points
+iNatPts_v <- terra::vect(iNatButt_sf_proj)
+
+###########################
+## --- Observations --- ###
+iNatObs_r <- terra::rasterize(iNatPts_v,
+                              r_template,
+                              fun = "count",
+                              background = 0)
+
+## Mask to BC
+iNatObs_r <- terra::mask(iNatObs_r, bc_v)
+
+######################
+## --- Species --- ###
+iNatPts_v$species <- iNatButt_sf_proj$genus_species
+
+iNatSpp_r <- terra::rasterize(iNatPts_v,
+                               r_template,
+                               field = "species",
+                               fun = function(x, ...) length(unique(x)),
+                               background = 0)
+
+## Mask to BC
+iNatSpp_r <- terra::mask(iNatSpp_r, bc_v)
+
+########################
+## --- Make Maps --- ###
+
+## Convert to dataframes
+iNatObs_df <- terra::as.data.frame(iNatObs_r, xy = TRUE, na.rm = FALSE)
+iNatSpp_df <- terra::as.data.frame(iNatSpp_r, xy = TRUE, na.rm = FALSE)
+
+names(iNatObs_df)[3]  <- "n_records"
+names(iNatSpp_df)[3] <- "species_richness"
+
+```
+
+```{r GbifHeatmap, echo = TRUE}
+
+###################
+## --- Setup --- ##
+
+GbifButt_sf_proj <- GbifDF_sf %>% 
+  sf::st_transform(3153)
+
+## Vectorize the points
+GbifPts_v <- terra::vect(GbifButt_sf_proj)
+
+###########################
+## --- Observations --- ###
+GbifObs_r <- terra::rasterize(GbifPts_v,
+                              r_template,
+                              fun = "count",
+                              background = 0)
+
+## Mask to BC
+GbifObs_r <- terra::mask(GbifObs_r, bc_v)
+
+######################
+## --- Species --- ###
+GbifPts_v$species <- GbifButt_sf_proj$genus_species
+
+GbifSpp_r <- terra::rasterize(GbifPts_v,
+                              r_template,
+                              field = "species",
+                              fun = function(x, ...) length(unique(x)),
+                              background = 0)
+
+## Mask to BC
+GbifSpp_r <- terra::mask(GbifSpp_r, bc_v)
+
+########################
+## --- Make Maps --- ###
+
+## Convert to dataframes
+GbifObs_df <- terra::as.data.frame(GbifObs_r, xy = TRUE, na.rm = FALSE)
+GbifSpp_df <- terra::as.data.frame(GbifSpp_r, xy = TRUE, na.rm = FALSE)
+
+names(GbifObs_df)[3]  <- "n_records"
+names(GbifSpp_df)[3] <- "species_richness"
+
+```
+
+
+```{r BothHeatmap, echo = TRUE}
+
+###################
+## --- Setup --- ##
+
+Gbif_core <- GbifButt_sf_proj %>%
+  dplyr::transmute(
+    record_id      = as.character(gbifID),
+    source         = "Gbif",
+    genus_species  = genus_species,
+    event_date     = eventDate,
+    Latitude       = Latitude,
+    Longitude      = Longitude,
+    geometry       = geometry
+  )
+
+iNat_core <- iNatButt_sf_proj %>%
+  dplyr::transmute(
+    record_id      = as.character(id),
+    source         = "iNat",
+    genus_species  = genus_species,
+    event_date     = observed_on,
+    Latitude       = Latitude,
+    Longitude      = Longitude,
+    geometry       = geometry
+  )
+
+BothButt_sf <- dplyr::bind_rows(Gbif_core, iNat_core)
+
+BothButt_sf_proj <- BothButt_sf %>% 
+  sf::st_transform(3153)
+
+## Vectorize the points
+BothPts_v <- terra::vect(BothButt_sf_proj)
+
+###########################
+## --- Observations --- ###
+BothObs_r <- terra::rasterize(BothPts_v,
+                              r_template,
+                              fun = "count",
+                              background = 0)
+
+## Mask to BC
+BothObs_r <- terra::mask(BothObs_r, bc_v)
+
+######################
+## --- Species --- ###
+BothPts_v$species <- BothButt_sf_proj$genus_species
+
+BothSpp_r <- terra::rasterize(BothPts_v,
+                              r_template,
+                              field = "species",
+                              fun = function(x, ...) length(unique(x)),
+                              background = 0)
+
+## Mask to BC
+BothSpp_r <- terra::mask(BothSpp_r, bc_v)
+
+########################
+## --- Make Maps --- ###
+
+## Convert to dataframes
+BothObs_df <- terra::as.data.frame(BothObs_r, xy = TRUE, na.rm = FALSE)
+BothSpp_df <- terra::as.data.frame(BothSpp_r, xy = TRUE, na.rm = FALSE)
+
+names(BothObs_df)[3]  <- "n_records"
+names(BothSpp_df)[3] <- "species_richness"
+
+```
+
+# Results
+
+## Compare the raw data between the datasets
+
+To start lets see how many records and species are included in each dataset. 
+
+```{r BCcomparison, echo = TRUE}
+nrow(GbifDF_sf)
+nrow(iNatButt_sf)
+nrow(BothButt_sf)
+
+length(unique(GbifDF_sf$genus_species))
+length(unique(iNatButt_sf$genus_species))
+length(unique(BothButt_sf$genus_species))
+
+## See what's unique to each
+gbif_spp <- unique(GbifDF_sf$genus_species)
+inat_spp   <- unique(iNatButt_sf$genus_species)
+
+inat_not_gbif <- setdiff(inat_spp, gbif_spp)
+gbif_not_inat <- setdiff(gbif_spp, inat_spp)
+
+inat_not_gbif
+gbif_not_inat
+```
+
+Lets see that in a table with the number of records and species available in BC for each dataset.
+
+```{r BCtable, echo = TRUE}
+
+```
+
+## Heatmaps
+
+```{r HeatmapSetUp, echo = TRUE}
+
+# --- Step 1: add a column for plotting, replacing 0 with NA ---
+GbifObs_df <- GbifObs_df %>%
+  dplyr::mutate(fill_value = ifelse(n_records == 0, 
+                                    NA_real_, 
+                                    n_records))
+
+iNatObs_df <- iNatObs_df %>%
+  dplyr::mutate(fill_value = ifelse(n_records == 0, 
+                                    NA_real_, 
+                                    n_records))
+
+BothObs_df <- BothObs_df %>%
+  dplyr::mutate(fill_value = ifelse(n_records == 0, 
+                                    NA_real_, 
+                                    n_records))
+
+GbifSpp_df <- GbifSpp_df %>%
+  dplyr::mutate(fill_value = ifelse(species_richness == 0, 
+                                    NA_real_, 
+                                    species_richness))
+
+iNatSpp_df <- iNatSpp_df %>%
+  dplyr::mutate(fill_value = ifelse(species_richness == 0, 
+                                    NA_real_, 
+                                    species_richness))
+
+BothSpp_df <- BothSpp_df %>%
+  dplyr::mutate(fill_value = ifelse(species_richness == 0, 
+                                    NA_real_, 
+                                    species_richness))
+
+# --- Step 2: compute min/max for the scale (optional but ensures same scale across plots) ---
+ObsFill_range <- range(c(GbifObs_df$fill_value, 
+                         iNatObs_df$fill_value,
+                         BothObs_df$fill_value), 
+                       na.rm = TRUE)
+SppFill_range <- range(c(GbifSpp_df$fill_value, 
+                         iNatSpp_df$fill_value,
+                         BothSpp_df$fill_value), 
+                       na.rm = TRUE)
+
+# --- Step 3: make the plots with the same scale ---
+
+## iNat
+iNatObsHeatmap <- ggplot2::ggplot() +
+  ggplot2::geom_raster(data = iNatObs_df,
+                       ggplot2::aes(x = x, y = y, fill = fill_value)) +
+  ggplot2::geom_sf(data = bc_sf, fill = NA, color = "black", linewidth = 0.4) +
+  ggplot2::scale_fill_viridis_c(name = "Records",
+                                trans = "sqrt",
+                                na.value = "white",
+                                limits = ObsFill_range) +
+  ggplot2::coord_sf(crs = sf::st_crs(3153), datum = NA) +
+  ggplot2::theme_minimal()
+
+iNatSppHeatmap <- ggplot2::ggplot() +
+  ggplot2::geom_raster(data = iNatSpp_df,
+                       ggplot2::aes(x = x, y = y, fill = fill_value)) +
+  ggplot2::geom_sf(data = bc_sf, fill = NA, color = "black", linewidth = 0.4) +
+  ggplot2::scale_fill_viridis_c(name = "Species",
+                                trans = "sqrt",
+                                na.value = "white",
+                                limits = SppFill_range) +
+  ggplot2::coord_sf(crs = sf::st_crs(3153), datum = NA) +
+  ggplot2::theme_minimal()
+
+## GBIF
+GbifObsHeatmap <- ggplot2::ggplot() +
+  ggplot2::geom_raster(data = GbifObs_df,
+                       ggplot2::aes(x = x, y = y, fill = fill_value)) +
+  ggplot2::geom_sf(data = bc_sf, fill = NA, color = "black", linewidth = 0.4) +
+  ggplot2::scale_fill_viridis_c(name = "Records",
+                                trans = "sqrt",
+                                na.value = "white",
+                                limits = ObsFill_range) +
+  ggplot2::coord_sf(crs = sf::st_crs(3153), datum = NA) +
+  ggplot2::theme_minimal()
+
+GbifSppHeatmap <- ggplot2::ggplot() +
+  ggplot2::geom_raster(data = GbifSpp_df,
+                       ggplot2::aes(x = x, y = y, fill = fill_value)) +
+  ggplot2::geom_sf(data = bc_sf, fill = NA, color = "black", linewidth = 0.4) +
+  ggplot2::scale_fill_viridis_c(name = "Species",
+                                trans = "sqrt",
+                                na.value = "white",
+                                limits = SppFill_range) +
+  ggplot2::coord_sf(crs = sf::st_crs(3153), datum = NA) +
+  ggplot2::theme_minimal()
+
+## Both
+BothObsHeatmap <- ggplot2::ggplot() +
+  ggplot2::geom_raster(data = BothObs_df,
+                       ggplot2::aes(x = x, y = y, fill = fill_value)) +
+  ggplot2::geom_sf(data = bc_sf, fill = NA, color = "black", linewidth = 0.4) +
+  ggplot2::scale_fill_viridis_c(name = "Records",
+                                trans = "sqrt",
+                                na.value = "white",
+                                limits = ObsFill_range) +
+  ggplot2::coord_sf(crs = sf::st_crs(3153), datum = NA) +
+  ggplot2::theme_minimal()
+
+BothSppHeatmap <- ggplot2::ggplot() +
+  ggplot2::geom_raster(data = BothSpp_df,
+                       ggplot2::aes(x = x, y = y, fill = fill_value)) +
+  ggplot2::geom_sf(data = bc_sf, fill = NA, color = "black", linewidth = 0.4) +
+  ggplot2::scale_fill_viridis_c(name = "Species",
+                                trans = "sqrt",
+                                na.value = "white",
+                                limits = SppFill_range) +
+  ggplot2::coord_sf(crs = sf::st_crs(3153), datum = NA) +
+  ggplot2::theme_minimal()
+
+
+
+
+# --- 0: main plots (no legends) ---
+p_rec_gbif <- GbifObsHeatmap + guides(fill="none")
+p_rec_inat   <- iNatObsHeatmap + guides(fill="none")
+p_rec_both   <- BothObsHeatmap + guides(fill="none")
+p_spp_gbif <- GbifSppHeatmap + guides(fill="none")
+p_spp_inat   <- iNatSppHeatmap + guides(fill="none")
+p_spp_both   <- BothSppHeatmap + guides(fill="none")
+
+# --- 1: Generate common legends ---
+records_combined <- (GbifObsHeatmap | iNatObsHeatmap | BothObsHeatmap) +
+  plot_layout(guides = "collect") & theme(legend.position = "right")
+
+records_legend <- ggdraw(cowplot::get_legend(records_combined))
+
+
+richness_combined <- (GbifSppHeatmap | iNatSppHeatmap | BothSppHeatmap) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "right")
+
+richness_legend <- cowplot::get_legend(richness_combined)
+
+records_legend <- ggdraw(records_legend)
+richness_legend <- ggdraw(richness_legend)
+
+# --- 2: Row labels ---
+row_records <- ggplot() +
+  annotate("text", x=0.5, y=0.5, label="Records", angle=90,
+           size=5, fontface="bold") +
+  theme_void()
+row_richness <- ggplot() +
+  annotate("text", x=0.5, y=0.5, label="Species\nRichness", angle=90,
+           size=5, fontface="bold") +
+  theme_void()
+
+# --- 3: Column titles (add spacer for the left column) ---
+col_spacer <- ggplot() + theme_void()  # empty plot for top-left
+col_gbif <- ggplot() +
+  annotate("text", x=0.5, y=0.5, label="GBIF", size=5, fontface="bold") +
+  theme_void()
+col_inat <- ggplot() +
+  annotate("text", x=0.5, y=0.5, label="iNaturalist", size=5, fontface="bold") +
+  theme_void()
+col_both <- ggplot() +
+  annotate("text", x=0.5, y=0.5, label="Combined", size=5, fontface="bold") +
+  theme_void()
+
+top_row <- col_spacer | col_gbif | col_inat | col_both | col_spacer # now 5 columns to match bottom row
+
+# --- 4: Bottom row with row labels ---
+bottom_rows <- 
+(row_records | p_rec_gbif | p_rec_inat | p_rec_both | records_legend) /
+(row_richness | p_spp_gbif | p_spp_inat | p_spp_both | richness_legend) +
+plot_layout(widths = c(0.03, 1, 1, 1), heights = c(1, 1))
+
+# --- 5: Combine column titles with plot grid ---
+final_plot <- top_row / bottom_rows + plot_layout(heights = c(0.08, 1))
+
+```
+
+```{=latex}
+\newpage
+\begin{landscape}
+```
+
+```{r HeatmapPanel, echo = FALSE, fig.width=10, fig.height=7.5}
+final_plot
+```
+
+```{=latex}
+\end{landscape}
+```
