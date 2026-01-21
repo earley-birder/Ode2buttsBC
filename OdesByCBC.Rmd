@@ -26,7 +26,7 @@ There are 3 Christmas Bird count locations that seem like they would be the best
 
 First we'll get those circles.
 
-For the Oliver-Osoyoos, and Vaseux Lake CBC circles we can use Dave Bell's CBC circles which I downloaded from his "(My Google Maps)[https://www.google.com/maps/d/viewer?mid=1D49EyLXIFoIBQYS5rE6Fi9YTenb6H46A&ll=49.715363640775124%2C-119.40967101463359&z=8]" and edited in OkanaganCBCcircles.R in this .RProj directory.
+For the Oliver-Osoyoos, and Vaseux Lake CBC circles we can use Dave Bell's CBC circles which I downloaded from his "[My Google Maps](https://www.google.com/maps/d/viewer?mid=1D49EyLXIFoIBQYS5rE6Fi9YTenb6H46A&ll=49.715363640775124%2C-119.40967101463359&z=8)" and edited in OkanaganCBCcircles.R in this .RProj directory.
 
 ```{r ReadCircles, echo = TRUE}
 OliverOsoyoosCBC <- sf::st_read("data/NathanCBCkmls/OliverOsoyoosCBC_Circle.kml",
@@ -164,58 +164,106 @@ Now we know what's going on in the BC ode collections according to Gibson et al 
 
 ### Butterfly data from GBIF
 
-Now that we have the circles lets bring in the digitized butterfly data available on GBIF.
+Now that we have the circles lets bring in the digitized butterfly data available on GBIF and downloaded on Jan 15, 2026.
 
 ```{r NhcButtDataReadIn, echo = TRUE}
-## Make a download request for GBIF data... I'm using an occ_download
-## instead of an occ_search because i) it lets me pull multiple families
-## and ii) it lets me exclude iNat data explicitly. 
-# dl <- rgbif::occ_download(
-#   pred_in("taxonKey", c(6951,    ## Hedylidae
-#                         6953,    ## Hesperiidae
-#                         5473,    ## Lycaenidae
-#                         7017,    ## Nymphalidae
-#                         9417,    ## Papilionidae
-#                         5481,    ## Pieridae
-#                         1933999  ## Riodinidae
-#   )),
-#   pred("GADM_GID", "CAN.2_1"),
-#   pred("hasCoordinate", TRUE),
-#   pred_not(
-#     pred("publishingOrg", "28eb1a3f-1c15-4a95-931a-4af90ecb574d")
-#   ),
-#   format = "SIMPLE_CSV",
-#   user  = Sys.getenv("GBIF_USER"),
-#   pwd   = Sys.getenv("GBIF_PWD"),
-#   email = Sys.getenv("GBIF_EMAIL"))
-# 
-# ## Check the status of that download with 
-# occ_download_wait(dl)
-# 
-# ## get some metadata
-# meta <- occ_download_meta(dl)
-# 
-# ## get that download
-# d <- occ_download_get(dl) %>%
-#   occ_download_import()
-# 
-# ## Finally we need to make sure that the Gibson data are in the right projection
-# GbifButtData_sf <- d %>% 
-#   dplyr::rename(Longitude = decimalLongitude, 
-#                 Latitude = decimalLatitude) %>% 
-#   sf::st_as_sf(coords = c("Longitude", "Latitude"),
-#                crs = 4326,
-#                remove = FALSE)
-# 
-# ## Write this into the data
-# saveRDS(GbifButtData_sf, "data/GbifData/GbifButtData_sf.rds")
+GbifHesp <- readr::read_tsv("data/GbifData/Hesperiidae/occurrence.txt",
+                            na = c("", "NA"),
+                            show_col_types = FALSE) %>% 
+  dplyr::mutate(decimalLatitude  = as.numeric(decimalLatitude),
+                decimalLongitude = as.numeric(decimalLongitude),
+                year = as.integer(year),
+                georeferencedDate= as.character(georeferencedDate))
 
-## Read the data back in
-GbifButtData <- readRDS("data/GbifData/GbifButtData_sf.rds")
+GbifLyca <- readr::read_tsv("data/GbifData/Lycaenidae/occurrence.txt",
+                            na = c("", "NA"),
+                            show_col_types = FALSE) %>% 
+  dplyr::mutate(decimalLatitude  = as.numeric(decimalLatitude),
+                decimalLongitude = as.numeric(decimalLongitude),
+                year = as.integer(year),
+                georeferencedDate= as.character(georeferencedDate))
+
+GbifNymp <- readr::read_tsv("data/GbifData/Nymphalidae/occurrence.txt",
+                            na = c("", "NA"),
+                            show_col_types = FALSE) %>% 
+  dplyr::mutate(decimalLatitude  = as.numeric(decimalLatitude),
+                decimalLongitude = as.numeric(decimalLongitude),
+                year = as.integer(year),
+                georeferencedDate= as.character(georeferencedDate))
+
+GbifPapi <- readr::read_tsv("data/GbifData/Papilionidae/occurrence.txt",
+                            na = c("", "NA"),
+                            show_col_types = FALSE) %>% 
+  dplyr::mutate(decimalLatitude  = as.numeric(decimalLatitude),
+                decimalLongitude = as.numeric(decimalLongitude),
+                year = as.integer(year),
+                georeferencedDate= as.character(georeferencedDate))
+
+GbifPier <- readr::read_tsv("data/GbifData/Pieridae/occurrence.txt",
+                            na = c("", "NA"),
+                            show_col_types = FALSE) %>% 
+  dplyr::mutate(decimalLatitude  = as.numeric(decimalLatitude),
+                decimalLongitude = as.numeric(decimalLongitude),
+                year = as.integer(year),
+                georeferencedDate= as.character(georeferencedDate))
+
+GbifRiod <- readr::read_tsv("data/GbifData/Riodinidae/occurrence.txt",
+                            na = c("", "NA"),
+                            show_col_types = FALSE) %>% 
+  dplyr::mutate(decimalLatitude  = as.numeric(decimalLatitude),
+                decimalLongitude = as.numeric(decimalLongitude),
+                year = as.integer(year),
+                georeferencedDate= as.character(georeferencedDate))
+
+GbifButt <- dplyr::bind_rows(GbifHesp, GbifLyca, GbifNymp, 
+                             GbifPapi, GbifPier, GbifRiod)
 
 ## Remove obs that aren't IDed to spp
-GbifButtData <- GbifButtData %>% 
-  dplyr::filter(!is.na(species) & species != "")
+GbifButt_clean <- GbifButt %>% 
+  dplyr::filter(!is.na(acceptedScientificName) & species != "") %>%
+  dplyr::filter(!str_detect(acceptedScientificName, 
+                            regex("complex", ignore_case = TRUE))) %>% 
+  dplyr::mutate(
+    acceptedScientificName = dplyr::if_else(
+      stringr::str_starts(acceptedScientificName, "BOLD"),
+      acceptedScientificName,
+      acceptedScientificName %>%
+        # remove "subsp"
+        str_remove_all("\\bsubsp\\b") %>% 
+        # remove "var." and "var"
+        str_remove_all("\\bvar\\.\\b") %>% 
+        str_remove_all("\\bvar\\b") %>% 
+        # keep up to first 3 words, treating hyphenated words as one
+        str_replace("^((?:\\b[\\w-]+\\b\\s+){0,2}\\b[\\w-]+\\b).*", "\\1") %>% 
+        # remove text in parentheses
+        str_remove_all("\\s*\\([^)]*\\)") %>%
+        # remove numbers
+        str_remove_all("\\d+") %>%
+        # remove word before comma + comma
+        str_remove_all("\\b\\w+\\s*,") %>%
+        # remove word or letter before period
+        str_remove_all("\\b\\w+\\.") %>%
+        # remove trailing quotes
+        str_remove_all('"$') %>%
+        # remove capitalized words after the second word (genus + species) but keep hyphenated species
+        str_replace("^([A-Z][a-z]+\\s+[a-z-]+(?:\\s+[a-z-]+)?).*", "\\1") %>% 
+        # remove '||''||' and anything after
+        str_remove("\\|\\|''\\|\\|.*$") %>%
+        # remove "&"s
+        str_remove_all("&") %>%
+        # remove any remaining [] brackets
+        str_remove_all("\\[|\\]") %>%
+        # remove second Parnassius and after
+        str_replace_all("(?<=\\bParnassius\\b).*\\bParnassius\\b.*$", "") %>%
+        # remove second Papilio and after
+        str_replace_all("(?<=\\bPapilio\\b).*\\bPapilio\\b.*$", "") %>%
+        # clean leftover whitespace
+        str_squish()
+    )
+  ) %>%
+  dplyr::filter(str_count(acceptedScientificName, "\\S+") > 1)
+
+sort(unique(GbifButt_clean$acceptedScientificName))
 ```
 
 The GBIF download DOI is `meta$doi`.
